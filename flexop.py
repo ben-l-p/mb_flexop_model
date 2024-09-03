@@ -28,14 +28,14 @@ class FLEXOP:
 
         dir_path = os.path.dirname(os.path.realpath(__file__))
         self.source_directory = os.path.join(dir_path, 'aeroelastic_properties')
-        
+
         print(f'Looking for source files in {self.source_directory}')
 
-    def init_aeroelastic(self,**kwargs):
+    def init_aeroelastic(self, **kwargs):
         m = kwargs.get('m', 4)
-        self.clean()
-        self.init_structure()
-        self.init_aero(m=m, **kwargs)
+        # self.clean()
+        self.init_structure(**kwargs)
+        self.init_aero(**kwargs)
         if kwargs.get('nonlifting_interactions', False):
             self.init_fuselage(**kwargs)
 
@@ -43,16 +43,18 @@ class FLEXOP:
         self.structure = FLEXOPStructure(self.case_name, self.case_route, self.source_directory, **kwargs)
 
     def init_aero(self, m, **kwargs):
-        self.aero = FLEXOPAero(m, self.structure, self.case_name, self.case_route, self.source_directory,**kwargs)
+        self.aero = FLEXOPAero(m, self.structure, self.case_name, self.case_route, self.source_directory, **kwargs)
 
     def init_fuselage(self, m, **kwargs):
-        self.fuselage = FLEXOPFuselage(m, self.structure, self.case_name, self.case_route, self.source_directory, **kwargs)
+        self.fuselage = FLEXOPFuselage(m, self.structure, self.case_name, self.case_route, self.source_directory,
+                                       **kwargs)
 
     def set_flight_controls(self, thrust=0., elevator=0.):
         self.structure.set_thrust(thrust)
 
         if self.aero is not None:
             self.aero.cs_deflection = elevator
+
     @property
     def reference_area(self):
         return area_ref
@@ -91,7 +93,7 @@ class FLEXOP:
                 os.remove(path_file)
 
     def run(self):
-        sharpy.sharpy_main.main(['', self.case_route + '/' + self.case_name + '.sharpy'])
+        return sharpy.sharpy_main.main(['', self.case_route + '/' + self.case_name + '.sharpy'])
 
 
 # version tracker and output
@@ -123,6 +125,7 @@ def print_git_status():
             '\tVersion: ' + version_msg + '\n' +
             '\tCommit hash: ' + get_git_revision_short_hash() + '\n'
             '\tFull hash: ' + get_git_revision_hash())
+
 
 if __name__ == '__main__':
     print(FLEXOP_DIRECTORY)

@@ -112,7 +112,7 @@ class FLEXOPStructure:
         self.span_tail = span_tail
         self.y_coord_junction = y_coord_junction # Radius fuselage at wing
 
-        self.wing_only = kwargs.get('wing_only', True)
+        self.wing_only = kwargs.get('wing_only', False)
         self.lifting_only = kwargs.get('lifting_only', True)
 
         self.ignore_lumped_masses_wing = kwargs.get('ignore_lumped_masses_wing', False)
@@ -441,7 +441,7 @@ class FLEXOPStructure:
             self.lumped_mass_position[-1, 2] = -0.25
             x_lm_payload = 0.2170 + self.dx_payload
             wn_fuselage_start = self.n_node_main  * 2- 1
-            self.lumped_mass_nodes[-1] = wn_fuselage_start +  self.find_index_of_closest_entry(self.x[wn_fuselage_start:wn_fuselage_start + self.n_node_fuselage], x_lm_payload)
+            self.lumped_mass_nodes[-1] = wn_fuselage_start + self.find_index_of_closest_entry(self.x[wn_fuselage_start:wn_fuselage_start + self.n_node_fuselage], x_lm_payload)
             self.lumped_mass_position[-1, 0] = x_lm_payload - self.x[self.lumped_mass_nodes[-1]]
         
         # Stiffness and mass properties
