@@ -1,7 +1,7 @@
 import os
 import shutil
 import numpy as np
-from structure_mb_rewrite import FlexopAeroelastic
+from create_multibody_flexop import FlexopAeroelastic
 import sharpy.sharpy_main
 
 # Simulation inputs
@@ -26,10 +26,10 @@ try:
 except FileExistsError:
     pass
 
-u_inf = 20.
+u_inf = 40.
 u_inf_dir = np.array((1., 0., 0.))
-m = 6
-m_star_fact = 1
+m = 10
+m_star_fact = 0.5
 physical_time = 1.
 c_ref = 0.35
 rho = 1.225
@@ -37,13 +37,16 @@ dt = c_ref / (m * u_inf)
 n_tstep = int(physical_time / dt)
 sigma = 0.3
 roll = np.deg2rad(0.)
-alpha = np.deg2rad(5.)
+alpha = np.deg2rad(0.)
 yaw = np.deg2rad(0.)
-use_multibody = True
+use_multibody = False
 use_aero = True
 include_tail = False
 use_airfoil = True
-
+use_rigid_sweep = True
+rigid_sweep_ang = np.deg2rad(20.)
+num_elem_warp_main = 4
+num_elem_warp_tip = 2
 flow = ['BeamLoader',
         'AerogridLoader',
         'DynamicCoupled']
@@ -75,6 +78,10 @@ settings = {'use_multibody': use_multibody,
             'include_tail': include_tail,
             'use_airfoil': use_airfoil,
             'use_aero': use_aero,
+            'use_rigid_sweep': use_rigid_sweep,
+            'rigid_sweep_ang': rigid_sweep_ang,
+            'num_elem_warp_main': num_elem_warp_main,
+            'num_elem_warp_tip': num_elem_warp_tip,
             'alpha': alpha,
             'yaw': yaw,
             'roll': roll,
@@ -88,24 +95,22 @@ settings = {'use_multibody': use_multibody,
             'flow': flow,
             }
 
-use_control = True
-# constraint_settings = {'flare_angle': np.deg2rad(20.)}
-constraint_settings = {'use_control': use_control,
-                       'input_angle_rhs_dir': input_angle_rhs_dir,
-                       'input_velocity_rhs_dir': input_velocity_rhs_dir,
-                       'input_angle_lhs_dir': input_angle_lhs_dir,
-                       'input_velocity_lhs_dir': input_velocity_lhs_dir,
-                       'u_rhs': u_rhs,
-                       'u_dot_rhs': u_dot_rhs,
-                       'u_lhs': u_lhs,
-                       'u_dot_lhs': u_dot_lhs,
-                       'n_elem_warp_main': 4,
-                       'n_elem_warp_tip': 2}
+use_control = False
+# constraint_settings = {'flare_angle': np.deg2rad(0.)}
+# constraint_settings = {'use_control': use_control,
+#                        'input_angle_rhs_dir': input_angle_rhs_dir,
+#                        'input_velocity_rhs_dir': input_velocity_rhs_dir,
+#                        'input_angle_lhs_dir': input_angle_lhs_dir,
+#                        'input_velocity_lhs_dir': input_velocity_lhs_dir,
+#                        'u_rhs': u_rhs,
+#                        'u_dot_rhs': u_dot_rhs,
+#                        'u_lhs': u_lhs,
+#                        'u_dot_lhs': u_dot_lhs}
 
 model = FlexopAeroelastic(case_name, case_route, **settings)
-model.add_constraint('clamped')
+# model.add_constraint('clamped')
 # model.add_constraint('free_hinge', **constraint_settings)
-model.add_constraint('prescribed_hinge', **constraint_settings)
+# model.add_constraint('prescribed_hinge', **constraint_settings)
 model.generate_h5()
 model.generate_settings()
 
