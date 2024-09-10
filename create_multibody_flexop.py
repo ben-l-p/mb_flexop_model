@@ -5,6 +5,7 @@ from scipy.io import loadmat, matlab
 import h5py as h5
 import os
 import configobj
+from time import time
 
 from sharpy.utils.algebra import euler2quat
 
@@ -42,6 +43,7 @@ class FlexopStructure:
         self.rigid_sweep_ang: float = kwargs.get('rigid_sweep_ang', 0.)
         self.num_elem_warp_main: int = kwargs.get('num_elem_warp_main', 4)
         self.num_elem_warp_tip: int = kwargs.get('num_elem_warp_tip', 2)
+        self.start_time = time()
 
         # create geometric parameters
         self.dimensions: dict[str, float] = dict()
@@ -329,26 +331,26 @@ class FlexopStructure:
             = np.linspace(self.dimensions['kink_y'], self.dimensions['hinge_y'], self.num_node['wing_main'])
 
         # tip section
-        if self.use_rigid_sweep:
-            tip_l = np.sqrt((self.dimensions['tip_x_qchord'] - self.dimensions['hinge_x'])**2
-                            + (self.dimensions['semi_span'] - self.dimensions['hinge_y'])**2)
-            sweep_tip_x = (self.dimensions['hinge_x']
-                           + np.sin(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
-            sweep_tip_y = (self.dimensions['hinge_y']
-                           + np.cos(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
-            self.x[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_x'], sweep_tip_x, self.num_node['wing_tip'])
-            self.y[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_y'], sweep_tip_y, self.num_node['wing_tip'])
-        else:
-            self.x[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_x'], self.dimensions['tip_x_qchord'], self.num_node['wing_tip'])
-            self.y[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_y'], self.dimensions['semi_span'], self.num_node['wing_tip'])
+        self.x[self.node_slice['wing1_tip']] \
+            = np.linspace(self.dimensions['hinge_x'], self.dimensions['tip_x_qchord'], self.num_node['wing_tip'])
+        self.y[self.node_slice['wing1_tip']] \
+            = np.linspace(self.dimensions['hinge_y'], self.dimensions['semi_span'], self.num_node['wing_tip'])
 
         # local coordinates
         self.x_local[self.node_slice['wing1']] = self.x[self.node_slice['wing1']]
         self.y_local[self.node_slice['wing1']] = self.y[self.node_slice['wing1']]
+
+        if self.use_rigid_sweep:
+            tip_l = np.sqrt((self.dimensions['tip_x_qchord'] - self.dimensions['hinge_x']) ** 2
+                            + (self.dimensions['semi_span'] - self.dimensions['hinge_y']) ** 2)
+            sweep_tip_x = (self.dimensions['hinge_x']
+                           + np.sin(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
+            sweep_tip_y = (self.dimensions['hinge_y']
+                           + np.cos(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
+            self.x_local[self.node_slice['wing1_tip']] \
+                = np.linspace(self.dimensions['hinge_x'], sweep_tip_x, self.num_node['wing_tip'])
+            self.y_local[self.node_slice['wing1_tip']] \
+                = np.linspace(self.dimensions['hinge_y'], sweep_tip_y, self.num_node['wing_tip'])
 
         self.elem_mass[self.elem_slice['wing1']] = np.arange(self.num_elem['each_wing'])
         self.for_delta[self.elem_slice['wing1'], :, 0] = -1.
@@ -522,7 +524,14 @@ class FlexopStructure:
         self.connectivity[self.elem_slice['tail2'][0], 0] = self.node_slice['fuselage_main'][-1]
 
     def generate_h5_fem(self):
-        with h5.File(self.case_route + '/' + self.case_name + '.fem.h5', 'a') as h5file:
+        file_route = self.case_route + '/' + self.case_name + '.fem.h5'
+        try:
+            os.remove(file_route)
+            print("Deleted FEM H5 file")
+        except OSError:
+            pass
+
+        with h5.File(file_route, 'a') as h5file:
             h5file.create_dataset('coordinates', data=np.column_stack((self.x_local, self.y_local, self.z_local)))
             h5file.create_dataset('connectivities', data=self.connectivity)
             h5file.create_dataset('num_node_elem', data=self.num_node_elem)
@@ -544,7 +553,14 @@ class FlexopStructure:
             h5file.create_dataset('lumped_mass_position', data=self.lumped_mass_position)
 
     def generate_h5_mb(self):
-        with h5.File(self.case_route + '/' + self.case_name + '.mb.h5', 'a') as h5file:
+        file_route = self.case_route + '/' + self.case_name + '.mb.h5'
+        try:
+            os.remove(file_route)
+            print("Deleted MB H5 file")
+        except OSError:
+            pass
+
+        with h5.File(file_route, 'a') as h5file:
             for i_body in range(self.num_bodies):
                 body = h5file.create_group(f'body_{i_body:02d}')
                 body.create_dataset('FoR_acceleration', data=self.for_acceleration[i_body, :])
@@ -837,7 +853,6 @@ class FlexopAeroelastic(FlexopStructure):
             num_node_warp_main = self.num_elem_warp_main * 2 + 1
             num_node_warp_tip = self.num_elem_warp_tip * 2 + 1
 
-
             rel_sweep_main = np.zeros(self.num_node['wing_main'])
             rel_sweep_main[-num_node_warp_main:] = np.linspace(0, -0.5 * self.rigid_sweep_ang, num_node_warp_main)
 
@@ -854,7 +869,6 @@ class FlexopAeroelastic(FlexopStructure):
 
             self.sweep[self.elem_slice['wing1'], :] = elem_sweep_abs + elem_sweep_rel
             self.chord[self.elem_slice['wing1'], :] /= np.cos(elem_sweep_rel)
-
 
     def generate_left_wing_aero(self) -> None:
         if self.use_multibody:
@@ -936,7 +950,15 @@ class FlexopAeroelastic(FlexopStructure):
         return np.deg2rad(jig_twist_interp)
 
     def generate_h5_aero(self):
-        with h5.File(self.case_route + '/' + self.case_name + '.aero.h5', 'a') as h5file:
+        file_route = self.case_route + '/' + self.case_name + '.aero.h5'
+
+        try:
+            os.remove(file_route)
+            print("Deleted AERO H5 file")
+        except OSError:
+            pass
+
+        with h5.File(file_route, 'a') as h5file:
             airfoils_group = h5file.create_group('airfoils')
             if self.use_airfoil:
                 airfoils_group.create_dataset('0', data=np.column_stack(self.load_airfoil_data_from_file()))
@@ -1171,6 +1193,35 @@ class FlexopAeroelastic(FlexopStructure):
                                            'dt': dt}
         }
 
+        self.settings['StaticCoupled'] = {
+            'print_info': 'on',
+            'max_iter': 200,
+            'n_load_steps': 1,
+            'tolerance': 1e-10,
+            'relaxation_factor': 0,
+            'aero_solver': 'StaticUvlm',
+            'aero_solver_settings': {
+                'rho': rho,
+                'print_info': 'off',
+                'horseshoe': 'off',
+                'num_cores': 8,
+                'n_rollup': 0,
+                'rollup_dt': dt,
+                'rollup_aic_refresh': 1,
+                'rollup_tolerance': 1e-4,
+                'velocity_field_generator': 'SteadyVelocityField',
+                'velocity_field_input': {
+                    'u_inf': u_inf,
+                    'u_inf_direction': u_inf_dir}},
+            'structural_solver': 'NonLinearStatic',
+            'structural_solver_settings': {'print_info': 'off',
+                                           'max_iterations': 150,
+                                           'num_load_steps': 4,
+                                           'delta_curved': 1e-1,
+                                           'min_delta': 1e-10,
+                                           'gravity_on': 'on',
+                                           'gravity': 9.81}}
+
         self.settings['NonLinearDynamicPrescribedStep'] = {'print_info': 'off',
                                                            'max_iterations': 950,
                                                            'delta_curved': 1e-1,
@@ -1188,15 +1239,29 @@ class FlexopAeroelastic(FlexopStructure):
                                                                                       'dt': dt}}
 
         self.settings['StepUvlm'] = {'print_info': 'on',
-                                     'num_cores': 8,
+                                     'num_cores': 4,
                                      'convection_scheme': 2,
-                                     'velocity_field_generator': 'SteadyVelocityField',
-                                     'velocity_field_input': {'u_inf': u_inf,
-                                                              'u_inf_direction': u_inf_dir},
+                                     # 'velocity_field_generator': 'SteadyVelocityField',
+                                     # 'velocity_field_input': {'u_inf': u_inf,
+                                     #                          'u_inf_direction': u_inf_dir},
+                                     'velocity_field_generator': 'GustVelocityField',
+                                     'velocity_field_input':
+                                         {'u_inf': u_inf,
+                                          'u_inf_direction': u_inf_dir,
+                                          'gust_shape': '1-cos',
+                                          'gust_parameters':
+                                              {'gust_length': self.input_settings['gust_length'],
+                                               'gust_intensity': self.input_settings['gust_intensity'] * u_inf},
+                                          'offset': self.input_settings['gust_length'] / 2.,
+                                          'relative_motion': 'on'},
                                      'rho': rho,
                                      'n_time_steps': n_tstep,
                                      'dt': dt,
                                      'gamma_dot_filtering': 3}
+
+        self.settings['AeroForcesCalculator'] = {'write_text_file': True}
+
+        self.settings['BeamLoads'] = {}
 
         self.settings['DynamicCoupled'] = {'print_info': 'on',
                                            'structural_substeps': 0,
@@ -1223,7 +1288,8 @@ class FlexopAeroelastic(FlexopStructure):
                                                                            'u_inf': u_inf,
                                                                            'include_rbm': 'on',
                                                                            'include_applied_forces': 'on',
-                                                                           'minus_m_star': 0}}}
+                                                                           'minus_m_star': 0},
+                                                                       }}
         if self.constraint_settings.get('use_control', False):
             self.settings['DynamicCoupled']['controller_id'] = {'controller_rhs': 'MultibodyController',
                                                                 'controller_lhs': 'MultibodyController'}
