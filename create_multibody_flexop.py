@@ -792,6 +792,7 @@ class FlexopAeroelastic(FlexopStructure):
         self.m_wing: int = kwargs.get('m_wing', 6)
         self.m_tail: int = kwargs.get('m_tail', 4)
         self.use_airfoil: bool = kwargs.get('use_airfoil', True)
+        self.include_elevators: bool = kwargs.get('include_elevators', True)
 
         self.num_surfaces: int = 2
         if self.use_multibody:
@@ -814,6 +815,14 @@ class FlexopAeroelastic(FlexopStructure):
             self.generate_fuselage_aero()
             self.generate_right_tail_aero()
             self.generate_left_tail_aero()
+
+        self.control_surface: Optional[np.ndarray] = None
+        self.control_surface_deflection: Optional[np.ndarray] = None
+        self.control_surface_chord: Optional[np.ndarray] = None
+        self.control_surface_hinge_coord: Optional[np.ndarray] = None
+        self.control_surface_type: Optional[np.ndarray] = None
+        if self.include_elevators:
+            self.generate_elevators()
 
     def generate_right_wing_aero(self) -> None:
         self.surface_m[0] = self.m_wing
@@ -925,6 +934,16 @@ class FlexopAeroelastic(FlexopStructure):
         self.elastic_axis[self.elem_slice['tail2'], :] = self.dimensions['ea_tail']
         self.airfoil_distribution[self.elem_slice['tail2'], :] = 1
 
+    def generate_elevators(self) -> None:
+        self.control_surface = np.full((self.num_elem['total'], self.num_node_elem), -1, dtype=int)
+        self.control_surface_deflection = np.zeros(2)
+        self.control_surface_chord = np.full(2, self.m_tail // 2, dtype=int)
+        self.control_surface_hinge_coord = np.zeros(2)
+        self.control_surface_type = np.zeros(2, dtype=int)
+
+        self.control_surface[self.elem_slice['tail1'], :] = 0
+        self.control_surface[self.elem_slice['tail2'], :] = 0
+
     def get_jigtwist_from_y_coord(self, y_coord):
         y_coord = abs(y_coord)
         df_jig_twist = pd.read_csv(self.source_directory + '/jig_twist.csv', sep=';')
@@ -977,6 +996,13 @@ class FlexopAeroelastic(FlexopStructure):
             h5file.create_dataset('aero_node', data=self.aero_node)
             h5file.create_dataset('elastic_axis', data=self.elastic_axis)
             h5file.create_dataset('m_distribution', data="uniform".encode('ascii', 'ignore'))
+
+            if self.include_elevators:
+                h5file.create_dataset('control_surface', data=self.control_surface)
+                h5file.create_dataset('control_surface_deflection', data=self.control_surface_deflection)
+                h5file.create_dataset('control_surface_chord', data=self.control_surface_chord)
+                h5file.create_dataset('control_surface_hinge_coord', data=self.control_surface_hinge_coord)
+                h5file.create_dataset('control_surface_type', data=self.control_surface_type)
 
     def generate_h5(self):
         self.generate_h5_fem()
@@ -1221,6 +1247,11 @@ class FlexopAeroelastic(FlexopStructure):
                                            'min_delta': 1e-10,
                                            'gravity_on': 'on',
                                            'gravity': 9.81}}
+
+        self.settings['StaticTrim'] = {'solver': 'StaticCoupled',
+                                       'solver_settings': self.settings['StaticCoupled'],
+                                       'thrust_nodes': [0],
+                                       'save_info': True}
 
         self.settings['NonLinearDynamicPrescribedStep'] = {'print_info': 'off',
                                                            'max_iterations': 950,

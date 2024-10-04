@@ -1,17 +1,18 @@
 import os
 import sys
-import scipy.io as spio
 import numpy as np
 from create_multibody_flexop import FlexopAeroelastic
 import sharpy.sharpy_main
 from case_data_extract import case_data_extract
+import pickle
+from filelock import FileLock
 
-# 108 cases
+# 99 cases
 # ordering is by: index = i_gust * len(ang) + i_ang
-import sys
-index = int(sys.argv[1])
+# index = int(sys.argv[1])
+index = 7
 
-gust_lengths = np.array((1., 2., 4., 6., 8., 10., 13., 16., 20., 25., 30., 40.))
+gust_lengths = np.array((2., 4., 6., 8., 10., 13., 16., 20., 25., 30., 40.))
 tip_angles = np.deg2rad(np.array((-40., -30., -20., -10., 0., 10., 20., 30., 40.)))
 
 i_gust = index // len(tip_angles)
@@ -25,7 +26,12 @@ rigid_sweep_ang = tip_angles[i_ang]
 case_name = f'rigid_flexop_ang{np.rad2deg(rigid_sweep_ang):.1f}_glength{gust_length:.1f}'
 case_route = os.path.abspath(os.path.dirname(os.path.realpath(__file__))) + '/cases/'
 case_out_folder = os.path.abspath(os.path.dirname(os.path.realpath(__file__))) + '/output/'
-mat_out_file = os.path.abspath(os.path.dirname(os.path.realpath(__file__))) + '/flexop_out.mat'
+pickle_out_file = os.path.abspath(os.path.dirname(os.path.realpath(__file__))) + '/flexop_out.pkl'
+
+try:
+    os.remove(pickle_out_file)
+except FileNotFoundError:
+    pass
 
 try:
     os.makedirs(case_route)
@@ -42,7 +48,7 @@ u_inf_dir = np.array((1., 0., 0.))
 gust_intensity = 0.5
 m = 10
 m_star_fact = 4.
-physical_time = 0.2
+physical_time = 0.008
 c_ref = 0.35
 rho = 1.225
 dt = c_ref / (m * u_inf)
@@ -53,18 +59,21 @@ alpha = np.deg2rad(0.)
 yaw = np.deg2rad(0.)
 use_multibody = False
 use_aero = True
-include_tail = False
+include_tail = True
 use_airfoil = True
 use_rigid_sweep = True
+include_elevators = True
 num_elem_warp_main = 2
 num_elem_warp_tip = 2
 flow = ['BeamLoader',
         'AerogridLoader',
         'Modal',
-        'StaticCoupled',
+        'StaticTrim',
+        # 'StaticCoupled',
         'DynamicCoupled',
-        'AeroForcesCalculator',
-        'BeamLoads']
+        # 'AeroForcesCalculator',
+        # 'BeamLoads',
+        ]
 
 # rotation about z - we will add the offset during model generation
 omega_u = 2 * np.pi / physical_time
@@ -91,6 +100,7 @@ input_velocity_lhs_dir = case_route + 'input_velocity_lhs.npy'
 
 settings = {'use_multibody': use_multibody,
             'include_tail': include_tail,
+            'include_elevators': include_elevators,
             'use_airfoil': use_airfoil,
             'use_aero': use_aero,
             'use_rigid_sweep': use_rigid_sweep,
@@ -134,10 +144,13 @@ model.generate_settings()
 
 case_data = sharpy.sharpy_main.main(['', case_route + '/' + case_name + '.sharpy'])
 
-try:
-    data_out = spio.loadmat(mat_out_file)['flexop_data']
-except FileNotFoundError:
-    data_out = np.full((len(gust_lengths), len(tip_angles)), fill_value={'case_run': 0}, dtype=dict)
-
-data_out[i_gust, i_ang] = case_data_extract(model, case_data)
-spio.savemat(mat_out_file, {'flexop_data': data_out})
+if include_elevators and 'StaticTrim' in flow:
+    control_surface_deflection = case_data.aero.aero_dict['control_surface_deflection'][0]
+pass
+# this_out_data = case_data_extract(model, case_data)
+#
+# # save data
+# lock = FileLock(pickle_out_file + '.lock', timeout=10)
+# with lock:
+#     with open(pickle_out_file, 'ab') as f:
+#         pickle.dump(this_out_data, f)
