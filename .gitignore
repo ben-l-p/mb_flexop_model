@@ -148,5 +148,9 @@ cases/
 output/
 output*/
 figures/
+*.png
+*.pkl
+*.sh
+*.dat
 
 .DS_Store

@@ -43,6 +43,9 @@ class FlexopStructure:
         self.rigid_sweep_ang: float = kwargs.get('rigid_sweep_ang', 0.)
         self.num_elem_warp_main: int = kwargs.get('num_elem_warp_main', 4)
         self.num_elem_warp_tip: int = kwargs.get('num_elem_warp_tip', 2)
+        self.gravity_on: bool = kwargs.get('gravity_on', True)
+        self.free: bool = kwargs.get('free', False)
+        self.use_jax: bool = kwargs.get('use_jax', True)
         self.start_time = time()
 
         # create geometric parameters
@@ -120,6 +123,9 @@ class FlexopStructure:
         self.applied_forces = np.zeros((self.num_node['total'], 6))
         self.struct_twist = np.zeros((self.num_elem['total'], self.num_node_elem))
         self.spanwise_shear_center: np.ndarray = self.read_spanwise_shear_center()
+        self.thrust = self.input_settings.get('thrust', 0.)
+        # self.applied_forces[0, 0] = self.thrust
+        self.applied_forces[0, 1] = self.thrust
 
         # other multibody stuff
         if self.use_multibody:
@@ -135,6 +141,9 @@ class FlexopStructure:
         self.body_quat[0, :] = self.in_quat
         self.constraints: list[dict[str, Any]] = []
         self.num_constraints: int = 0
+
+        # if self.free:
+        #     self.for_velocity[:, 0] = self.input_settings['u_inf']
 
         self.y_cross_sections = self.load_y_cross_sections()
 
@@ -364,6 +373,8 @@ class FlexopStructure:
             self.body_number[self.elem_slice['wing1_tip']] = 1
             self.beam_number[self.elem_slice['wing1_tip']] = 1
             self.body_quat[1, :] = self.in_quat
+            self.for_position[1, 0] = self.x[self.node_slice['wing1_tip'][0]]
+            self.for_position[1, 1] = self.y[self.node_slice['wing1_tip'][0]]
 
         # connectivity
         if self.use_multibody:
@@ -413,6 +424,8 @@ class FlexopStructure:
             self.beam_number[self.elem_slice['wing2']] = 2
             self.beam_number[self.elem_slice['wing2_tip']] = 3
             self.body_quat[2, :] = self.in_quat
+            self.for_position[2, 0] = self.x[self.node_slice['wing2_tip'][0]]
+            self.for_position[2, 1] = self.y[self.node_slice['wing2_tip'][0]]
         else:
             self.beam_number[self.elem_slice['wing2']] = 1
 
@@ -532,7 +545,8 @@ class FlexopStructure:
             pass
 
         with h5.File(file_route, 'a') as h5file:
-            h5file.create_dataset('coordinates', data=np.column_stack((self.x_local, self.y_local, self.z_local)))
+            # h5file.create_dataset('coordinates', data=np.column_stack((self.x_local, self.y_local, self.z_local)))
+            h5file.create_dataset('coordinates', data=np.column_stack((self.x, self.y, self.z)))
             h5file.create_dataset('connectivities', data=self.connectivity)
             h5file.create_dataset('num_node_elem', data=self.num_node_elem)
             h5file.create_dataset('num_node', data=self.num_node['total'])
@@ -793,6 +807,7 @@ class FlexopAeroelastic(FlexopStructure):
         self.m_tail: int = kwargs.get('m_tail', 4)
         self.use_airfoil: bool = kwargs.get('use_airfoil', True)
         self.include_elevators: bool = kwargs.get('include_elevators', True)
+        self.cfl1: bool = kwargs.get('cfl1', True)
 
         self.num_surfaces: int = 2
         if self.use_multibody:
@@ -821,7 +836,7 @@ class FlexopAeroelastic(FlexopStructure):
         self.control_surface_chord: Optional[np.ndarray] = None
         self.control_surface_hinge_coord: Optional[np.ndarray] = None
         self.control_surface_type: Optional[np.ndarray] = None
-        if self.include_elevators:
+        if self.include_elevators and self.include_tail:
             self.generate_elevators()
 
     def generate_right_wing_aero(self) -> None:
@@ -936,7 +951,7 @@ class FlexopAeroelastic(FlexopStructure):
 
     def generate_elevators(self) -> None:
         self.control_surface = np.full((self.num_elem['total'], self.num_node_elem), -1, dtype=int)
-        self.control_surface_deflection = np.zeros(2)
+        self.control_surface_deflection = np.full(2, self.input_settings.get('elevator_angle', 0.), dtype=float)
         self.control_surface_chord = np.full(2, self.m_tail // 2, dtype=int)
         self.control_surface_hinge_coord = np.zeros(2)
         self.control_surface_type = np.zeros(2, dtype=int)
@@ -997,7 +1012,7 @@ class FlexopAeroelastic(FlexopStructure):
             h5file.create_dataset('elastic_axis', data=self.elastic_axis)
             h5file.create_dataset('m_distribution', data="uniform".encode('ascii', 'ignore'))
 
-            if self.include_elevators:
+            if self.include_elevators and self.include_tail:
                 h5file.create_dataset('control_surface', data=self.control_surface)
                 h5file.create_dataset('control_surface_deflection', data=self.control_surface_deflection)
                 h5file.create_dataset('control_surface_chord', data=self.control_surface_chord)
@@ -1200,8 +1215,8 @@ class FlexopAeroelastic(FlexopStructure):
             'flow': self.input_settings['flow'],
             'case': self.case_name,
             'route': self.case_route,
-            'write_screen': 'on',
-            'write_log': 'on'
+            'write_screen': True,
+            'write_log': True
         }
 
         self.settings['BeamLoader'] = {
@@ -1219,8 +1234,14 @@ class FlexopAeroelastic(FlexopStructure):
                                            'dt': dt}
         }
 
+        if not self.cfl1:
+            self.settings['AerogridLoader']['wake_shape_generator_input'].update({'dx1': u_inf * dt,
+                                                                                  'ndx1': 6,
+                                                                                  'r': 1.2,
+                                                                                  'dxmax': 20 * u_inf * dt})
+
         self.settings['StaticCoupled'] = {
-            'print_info': 'on',
+            'print_info': True,
             'max_iter': 200,
             'n_load_steps': 1,
             'tolerance': 1e-10,
@@ -1228,10 +1249,11 @@ class FlexopAeroelastic(FlexopStructure):
             'aero_solver': 'StaticUvlm',
             'aero_solver_settings': {
                 'rho': rho,
-                'print_info': 'off',
-                'horseshoe': 'off',
+                'print_info': False,
+                'horseshoe': False,
                 'num_cores': 8,
                 'n_rollup': 0,
+                'cfl1': self.cfl1,
                 'rollup_dt': dt,
                 'rollup_aic_refresh': 1,
                 'rollup_tolerance': 1e-4,
@@ -1240,12 +1262,12 @@ class FlexopAeroelastic(FlexopStructure):
                     'u_inf': u_inf,
                     'u_inf_direction': u_inf_dir}},
             'structural_solver': 'NonLinearStatic',
-            'structural_solver_settings': {'print_info': 'off',
+            'structural_solver_settings': {'print_info': False,
                                            'max_iterations': 150,
                                            'num_load_steps': 4,
                                            'delta_curved': 1e-1,
                                            'min_delta': 1e-10,
-                                           'gravity_on': 'on',
+                                           'gravity_on': self.gravity_on,
                                            'gravity': 9.81}}
 
         self.settings['StaticTrim'] = {'solver': 'StaticCoupled',
@@ -1253,7 +1275,7 @@ class FlexopAeroelastic(FlexopStructure):
                                        'thrust_nodes': [0],
                                        'save_info': True}
 
-        self.settings['NonLinearDynamicPrescribedStep'] = {'print_info': 'off',
+        self.settings['NonLinearDynamicPrescribedStep'] = {'print_info': False,
                                                            'max_iterations': 950,
                                                            'delta_curved': 1e-1,
                                                            'min_delta': 1e3,
@@ -1263,28 +1285,47 @@ class FlexopAeroelastic(FlexopStructure):
                                                            'num_steps': n_tstep,
                                                            'dt': dt}
 
+        self.settings['NonLinearDynamicCoupledStep'] = {'print_info': False,
+                                                           'max_iterations': 950,
+                                                           'delta_curved': 1e-1,
+                                                           'min_delta': 1e3,
+                                                           'newmark_damp': 5e-3,
+                                                           'gravity_on': True,
+                                                           'gravity': 9.81,
+                                                           'num_steps': n_tstep,
+                                                           'dt': dt,
+                                                            'initial_velocity': -u_inf,
+                                                            'initial_velocity_direction': u_inf_dir}
+
         self.settings['NonLinearDynamicMultibodyJAX'] = {'gravity_on': True,
                                                          'gravity': 9.81,
+                                                         'initial_velocity': u_inf if self.free else 0.,
                                                          'time_integrator': 'NewmarkBetaJAX',
                                                          'time_integrator_settings': {'newmark_damp': 0.0,
                                                                                       'dt': dt}}
 
-        self.settings['StepUvlm'] = {'print_info': 'on',
-                                     'num_cores': 4,
+        self.settings['NonLinearDynamicMultibody'] = {'gravity_on': True,
+                                                    'gravity': 9.81,
+                                                      'initial_velocity': u_inf if self.free else 0.,
+                                                         'time_integrator': 'NewmarkBeta',
+                                                         'time_integrator_settings': {'newmark_damp': 0.0,
+                                                                                      'dt': dt}}
+
+        self.settings['StepUvlm'] = {'print_info': True,
+                                     'num_cores': 8,
+                                     'cfl1': self.cfl1,
                                      'convection_scheme': 2,
-                                     # 'velocity_field_generator': 'SteadyVelocityField',
-                                     # 'velocity_field_input': {'u_inf': u_inf,
-                                     #                          'u_inf_direction': u_inf_dir},
                                      'velocity_field_generator': 'GustVelocityField',
                                      'velocity_field_input':
-                                         {'u_inf': u_inf,
+                                         # {'u_inf': u_inf * int(self.free),
+                                         {'u_inf': u_inf * int(not self.free),
                                           'u_inf_direction': u_inf_dir,
                                           'gust_shape': '1-cos',
                                           'gust_parameters':
                                               {'gust_length': self.input_settings['gust_length'],
                                                'gust_intensity': self.input_settings['gust_intensity'] * u_inf},
-                                          'offset': self.input_settings['gust_length'] / 2.,
-                                          'relative_motion': 'on'},
+                                          'offset': self.input_settings.get('gust_offset', 0.),
+                                          'relative_motion': not self.free},
                                      'rho': rho,
                                      'n_time_steps': n_tstep,
                                      'dt': dt,
@@ -1292,17 +1333,10 @@ class FlexopAeroelastic(FlexopStructure):
 
         self.settings['AeroForcesCalculator'] = {'write_text_file': True}
 
-        self.settings['BeamLoads'] = {}
-
-        self.settings['DynamicCoupled'] = {'print_info': 'on',
+        self.settings['DynamicCoupled'] = {'print_info': True,
                                            'structural_substeps': 0,
-                                           'dynamic_relaxation': 'on',
-                                           'cleanup_previous_solution': 'on',
-                                           'structural_solver': 'NonLinearDynamicMultibodyJAX' if self.use_multibody
-                                           else 'NonLinearDynamicPrescribedStep',
-                                           'structural_solver_settings': self.settings[
-                                               'NonLinearDynamicMultibodyJAX'] if self.use_multibody
-                                           else self.settings['NonLinearDynamicPrescribedStep'],
+                                           'dynamic_relaxation': True,
+                                           'cleanup_previous_solution': True,
                                            'aero_solver': 'StepUvlm' if use_aero else 'NoAero',
                                            'aero_solver_settings': self.settings['StepUvlm'] if use_aero else {},
                                            'fsi_substeps': 100,
@@ -1312,15 +1346,33 @@ class FlexopAeroelastic(FlexopStructure):
                                            'n_time_steps': n_tstep,
                                            'dt': dt,
                                            'include_unsteady_force_contribution': True,
-                                           'postprocessors': ['BeamPlot', 'AerogridPlot'],
-                                           'postprocessors_settings': {'BeamPlot': {'include_rbm': 'on',
-                                                                                    'include_applied_forces': 'on'},
+                                           'postprocessors': ['BeamPlot', 'AerogridPlot', 'BeamLoads'],
+                                           'postprocessors_settings': {'BeamPlot': {'include_rbm': True,
+                                                                                    'include_applied_forces': True},
                                                                        'AerogridPlot': {
                                                                            'u_inf': u_inf,
-                                                                           'include_rbm': 'on',
-                                                                           'include_applied_forces': 'on',
+                                                                           'include_rbm': True,
+                                                                           'include_applied_forces': True,
                                                                            'minus_m_star': 0},
-                                                                       }}
+                                                                        'BeamLoads': {}}}
+
+        if self.use_multibody and self.use_jax:
+            self.settings['DynamicCoupled'].update({'structural_solver': 'NonLinearDynamicMultibodyJAX'})
+            self.settings['DynamicCoupled'].update(
+                {'structural_solver_settings': self.settings['NonLinearDynamicMultibodyJAX']})
+        elif self.use_multibody and not self.use_jax:
+            self.settings['DynamicCoupled'].update({'structural_solver': 'NonLinearDynamicMultibody'})
+            self.settings['DynamicCoupled'].update(
+                {'structural_solver_settings': self.settings['NonLinearDynamicMultibody']})
+        elif self.free:
+            self.settings['DynamicCoupled'].update({'structural_solver': 'NonLinearDynamicCoupledStep'})
+            self.settings['DynamicCoupled'].update(
+                {'structural_solver_settings': self.settings['NonLinearDynamicCoupledStep']})
+        else:
+            self.settings['DynamicCoupled'].update({'structural_solver': 'NonLinearDynamicPrescribedStep'})
+            self.settings['DynamicCoupled'].update(
+                {'structural_solver_settings': self.settings['NonLinearDynamicPrescribedStep']})
+
         if self.constraint_settings.get('use_control', False):
             self.settings['DynamicCoupled']['controller_id'] = {'controller_rhs': 'MultibodyController',
                                                                 'controller_lhs': 'MultibodyController'}
@@ -1332,18 +1384,20 @@ class FlexopAeroelastic(FlexopStructure):
                                       'ang_vel_history_input_file': self.constraint_settings['input_velocity_lhs_dir'],
                                       'dt': dt}}
 
-        self.settings['AerogridPlot'] = {'include_rbm': 'off',
-                                         'include_applied_forces': 'on',
+        self.settings['AerogridPlot'] = {'include_rbm': True,
+                                         'include_applied_forces': True,
                                          'minus_m_star': 0}
 
-        self.settings['BeamPlot'] = {'include_rbm': 'off',
-                                     'include_applied_forces': 'on'}
+        self.settings['BeamPlot'] = {'include_rbm': True,
+                                     'include_applied_forces': True}
+
+        self.settings['BeamLoads'] = {}
 
         self.settings['Modal'] = {'NumLambda': 20,
-                                  'rigid_body_modes': 'off',
-                                  'print_matrices': 'off',
-                                  'save_data': 'off',
-                                  'continuous_eigenvalues': 'off',
+                                  'rigid_body_modes': False,
+                                  'print_matrices': False,
+                                  'save_data': False,
+                                  'continuous_eigenvalues': False,
                                   'dt': 0,
                                   'plot_eigenvalues': False,
                                   'max_rotation_deg': 15.,
