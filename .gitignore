@@ -149,7 +149,6 @@ test_cases/
 output/
 output*/
 figures/
-*.png
 *.pkl
 *.sh
 *.dat
