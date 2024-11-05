@@ -7,7 +7,7 @@ import os
 import configobj
 from time import time
 
-from sharpy.utils.algebra import euler2quat
+from sharpy.utils.algebra import euler2quat, quat2rotation
 
 
 class FlexopStructure:
@@ -39,6 +39,7 @@ class FlexopStructure:
         self.roll: float = kwargs.get('roll', 0.)
         self.yaw: float = kwargs.get('roll', 0.)
         self.in_quat = euler2quat(np.array((self.roll, self.alpha, self.yaw)))
+        self.in_rot = quat2rotation(self.in_quat)
         self.use_rigid_sweep: bool = kwargs.get('use_rigid_sweep', False)
         self.rigid_sweep_ang: float = kwargs.get('rigid_sweep_ang', 0.)
         self.num_elem_warp_main: int = kwargs.get('num_elem_warp_main', 4)
@@ -107,9 +108,12 @@ class FlexopStructure:
         self.x = np.zeros(self.num_node['total'])
         self.y = np.zeros(self.num_node['total'])
         self.z = np.zeros(self.num_node['total'])
-        self.x_local = np.zeros(self.num_node['total'])
-        self.y_local = np.zeros(self.num_node['total'])
-        self.z_local = np.zeros(self.num_node['total'])
+
+        # when using rigid sweep, as the coordines change this messes up finding properties dependent on the spanwise
+        # position, so we keep a copy of the original values here
+        self.x_unswept = np.zeros(self.num_node['total'])
+        self.y_unswept = np.zeros(self.num_node['total'])
+        self.z_unswept = np.zeros(self.num_node['total'])
 
         # other fem stuff
         self.beam_number = np.zeros(self.num_elem['total'], dtype=int)
@@ -124,7 +128,6 @@ class FlexopStructure:
         self.struct_twist = np.zeros((self.num_elem['total'], self.num_node_elem))
         self.spanwise_shear_center: np.ndarray = self.read_spanwise_shear_center()
         self.thrust = self.input_settings.get('thrust', 0.)
-        # self.applied_forces[0, 0] = self.thrust
         self.applied_forces[0, 1] = self.thrust
 
         # other multibody stuff
@@ -141,9 +144,6 @@ class FlexopStructure:
         self.body_quat[0, :] = self.in_quat
         self.constraints: list[dict[str, Any]] = []
         self.num_constraints: int = 0
-
-        # if self.free:
-        #     self.for_velocity[:, 0] = self.input_settings['u_inf']
 
         self.y_cross_sections = self.load_y_cross_sections()
 
@@ -345,36 +345,22 @@ class FlexopStructure:
         self.y[self.node_slice['wing1_tip']] \
             = np.linspace(self.dimensions['hinge_y'], self.dimensions['semi_span'], self.num_node['wing_tip'])
 
-        # local coordinates
-        self.x_local[self.node_slice['wing1']] = self.x[self.node_slice['wing1']]
-        self.y_local[self.node_slice['wing1']] = self.y[self.node_slice['wing1']]
-
-        if self.use_rigid_sweep:
-            tip_l = np.sqrt((self.dimensions['tip_x_qchord'] - self.dimensions['hinge_x']) ** 2
-                            + (self.dimensions['semi_span'] - self.dimensions['hinge_y']) ** 2)
-            sweep_tip_x = (self.dimensions['hinge_x']
-                           + np.sin(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
-            sweep_tip_y = (self.dimensions['hinge_y']
-                           + np.cos(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
-            self.x_local[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_x'], sweep_tip_x, self.num_node['wing_tip'])
-            self.y_local[self.node_slice['wing1_tip']] \
-                = np.linspace(self.dimensions['hinge_y'], sweep_tip_y, self.num_node['wing_tip'])
-
         self.elem_mass[self.elem_slice['wing1']] = np.arange(self.num_elem['each_wing'])
         self.for_delta[self.elem_slice['wing1'], :, 0] = -1.
         self.boundary_conditions[self.node_slice['wing1'][-1]] = -1  # wing tip
 
         if self.use_multibody:
-            self.x_local[self.node_slice['wing1_tip']] -= self.x[self.node_slice['wing1_main'][-1]]
-            self.y_local[self.node_slice['wing1_tip']] -= self.y[self.node_slice['wing1_main'][-1]]
             self.boundary_conditions[self.node_slice['wing1_main'][-1]] = -1  # hinge tip
             self.boundary_conditions[self.node_slice['wing1_tip'][0]] = 1  # hinge root
             self.body_number[self.elem_slice['wing1_tip']] = 1
             self.beam_number[self.elem_slice['wing1_tip']] = 1
             self.body_quat[1, :] = self.in_quat
-            self.for_position[1, 0] = self.x[self.node_slice['wing1_tip'][0]]
-            self.for_position[1, 1] = self.y[self.node_slice['wing1_tip'][0]]
+
+            for_pos_a = np.array((self.x[self.node_slice['wing1_tip'][0]],
+                                  self.y[self.node_slice['wing1_tip'][0]],
+                                  self.z[self.node_slice['wing1_tip'][0]]))
+            for_pos_g = self.in_rot @ for_pos_a
+            self.for_position[1, :3] = for_pos_g
 
         # connectivity
         if self.use_multibody:
@@ -397,14 +383,30 @@ class FlexopStructure:
             self.elem_mass[i_elem] = i_elem
 
             self.elastic_axis[i_elem, :] = self.spanwise_shear_center[self.elem_stiffness[i_elem]]
+
+        self.x_unswept[self.node_slice['wing1']] = self.x[self.node_slice['wing1']]
+        self.y_unswept[self.node_slice['wing1']] = self.y[self.node_slice['wing1']]
+
+        if self.use_rigid_sweep:
+            tip_l = np.sqrt((self.dimensions['tip_x_qchord'] - self.dimensions['hinge_x']) ** 2
+                            + (self.dimensions['semi_span'] - self.dimensions['hinge_y']) ** 2)
+            sweep_tip_x = (self.dimensions['hinge_x']
+                           + np.sin(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
+            sweep_tip_y = (self.dimensions['hinge_y']
+                           + np.cos(self.rigid_sweep_ang + self.dimensions['sweep_wing_qchord']) * tip_l)
+            self.x[self.node_slice['wing1_tip']] \
+                = np.linspace(self.dimensions['hinge_x'], sweep_tip_x, self.num_node['wing_tip'])
+            self.y[self.node_slice['wing1_tip']] \
+                = np.linspace(self.dimensions['hinge_y'], sweep_tip_y, self.num_node['wing_tip'])
         pass
 
     def generate_left_wing_fem(self):
         # straight section
         self.x[self.node_slice['wing2']] = self.x[self.node_slice['wing1']]
         self.y[self.node_slice['wing2']] = -self.y[self.node_slice['wing1']]
-        self.x_local[self.node_slice['wing2']] = self.x_local[self.node_slice['wing1']]
-        self.y_local[self.node_slice['wing2']] = -self.y_local[self.node_slice['wing1']]
+
+        self.x_unswept[self.node_slice['wing2']] = self.x_unswept[self.node_slice['wing1']]
+        self.y_unswept[self.node_slice['wing2']] = -self.x_unswept[self.node_slice['wing1']]
 
         self.elem_mass[self.elem_slice['wing2']] = self.elem_mass[self.elem_slice['wing1']]
         self.for_delta[self.elem_slice['wing2'], :, 0] = 1.
@@ -424,8 +426,12 @@ class FlexopStructure:
             self.beam_number[self.elem_slice['wing2']] = 2
             self.beam_number[self.elem_slice['wing2_tip']] = 3
             self.body_quat[2, :] = self.in_quat
-            self.for_position[2, 0] = self.x[self.node_slice['wing2_tip'][0]]
-            self.for_position[2, 1] = self.y[self.node_slice['wing2_tip'][0]]
+
+            for_pos_a = np.array((self.x[self.node_slice['wing2_tip'][0]],
+                                  self.y[self.node_slice['wing2_tip'][0]],
+                                  self.z[self.node_slice['wing2_tip'][0]]))
+            for_pos_g = self.in_rot @ for_pos_a
+            self.for_position[2, :3] = for_pos_g
         else:
             self.beam_number[self.elem_slice['wing2']] = 1
 
@@ -442,10 +448,6 @@ class FlexopStructure:
         self.x[self.node_slice['fuselage_rear']] \
             = np.linspace(self.dimensions['length_fuselage_main'], self.dimensions['length_fuselage_main']
                           + self.dimensions['length_fuselage_rear'], self.num_node['fuselage_rear'])
-
-        self.x_local[self.node_slice['fuselage_front']] = self.x[self.node_slice['fuselage_front']]
-        self.x_local[self.node_slice['fuselage_main']] = self.x[self.node_slice['fuselage_main']]
-        self.x_local[self.node_slice['fuselage_rear']] = self.x[self.node_slice['fuselage_rear']]
 
         self.for_delta[self.elem_slice['fuselage_front'], :, 1] = -1.
         self.for_delta[self.elem_slice['fuselage_main'], :, 1] = 1.
@@ -492,10 +494,6 @@ class FlexopStructure:
         self.z[self.node_slice['tail1']] \
             = np.linspace(0., self.dimensions['tail_tip_z'], self.num_node['each_tail'])
 
-        self.x_local[self.node_slice['tail1']] = self.x[self.node_slice['tail1']]
-        self.y_local[self.node_slice['tail1']] = self.y[self.node_slice['tail1']]
-        self.z_local[self.node_slice['tail1']] = self.z[self.node_slice['tail1']]
-
         self.for_delta[self.elem_slice['tail1'], :, 0] = -1.
         self.elem_stiffness[self.elem_slice['tail1']] = self.num_stiffness - 1
         self.elem_mass[self.elem_slice['tail1']] = self.num_mass - 1
@@ -516,9 +514,6 @@ class FlexopStructure:
         self.x[self.node_slice['tail2']] = self.x[self.node_slice['tail1']]
         self.y[self.node_slice['tail2']] = -self.y[self.node_slice['tail1']]
         self.z[self.node_slice['tail2']] = self.z[self.node_slice['tail1']]
-        self.x_local[self.node_slice['tail2']] = self.x[self.node_slice['tail2']]
-        self.y_local[self.node_slice['tail2']] = self.y[self.node_slice['tail2']]
-        self.z_local[self.node_slice['tail2']] = self.z[self.node_slice['tail2']]
 
         self.for_delta[self.elem_slice['tail2'], :, 0] = 1.
         self.elem_stiffness[self.elem_slice['tail2']] = self.num_stiffness - 1
@@ -545,7 +540,6 @@ class FlexopStructure:
             pass
 
         with h5.File(file_route, 'a') as h5file:
-            # h5file.create_dataset('coordinates', data=np.column_stack((self.x_local, self.y_local, self.z_local)))
             h5file.create_dataset('coordinates', data=np.column_stack((self.x, self.y, self.z)))
             h5file.create_dataset('connectivities', data=self.connectivity)
             h5file.create_dataset('num_node_elem', data=self.num_node_elem)
@@ -842,8 +836,7 @@ class FlexopAeroelastic(FlexopStructure):
     def generate_right_wing_aero(self) -> None:
         self.surface_m[0] = self.m_wing
         if self.use_multibody:
-            self.surface_m[1] = self.m_wing
-            self.surface_distribution[self.elem_slice['wing1_tip']] = 1
+            self.aero_node[self.node_slice['wing1_tip'][0]] = 0
 
         wing_chord_nodal = np.zeros((self.num_node['each_wing']))
         wing_chord_nodal[self.node_slice['wing1_inner']] = self.dimensions['chord_wing_root']
@@ -854,7 +847,7 @@ class FlexopAeroelastic(FlexopStructure):
                                                 - self.dimensions['kink_y'])) * (self.dimensions['chord_wing_root']
                                                                                  - self.dimensions['chord_wing_tip'])))
 
-        wing_twist_nodal = [-self.get_jigtwist_from_y_coord(y) for y in self.y[self.node_slice['wing1']]]
+        wing_twist_nodal = [-self.get_jigtwist_from_y_coord(y) for y in self.y_unswept[self.node_slice['wing1']]]
 
         wing_ea_elem = np.array([self.spanwise_shear_center[self.elem_stiffness[i_elem]]
                                  for i_elem in range(self.num_elem['each_wing'])])
@@ -896,9 +889,9 @@ class FlexopAeroelastic(FlexopStructure):
 
     def generate_left_wing_aero(self) -> None:
         if self.use_multibody:
-            self.surface_m[2:4] = self.m_wing
-            self.surface_distribution[self.elem_slice['wing2']] = 2
-            self.surface_distribution[self.elem_slice['wing2_tip']] = 3
+            self.surface_m[1] = self.m_wing
+            self.surface_distribution[self.elem_slice['wing2']] = 1
+            self.aero_node[self.node_slice['wing2_tip'][0]] = 0
         else:
             self.surface_m[1] = self.m_wing
             self.surface_distribution[self.elem_slice['wing2']] = 1
@@ -921,8 +914,8 @@ class FlexopAeroelastic(FlexopStructure):
 
     def generate_right_tail_aero(self) -> None:
         if self.use_multibody:
-            self.surface_distribution[self.elem_slice['tail1']] = 4
-            self.surface_m[4] = self.m_tail
+            self.surface_distribution[self.elem_slice['tail1']] = 2
+            self.surface_m[2] = self.m_tail
         else:
             self.surface_distribution[self.elem_slice['tail1']] = 2
             self.surface_m[2] = self.m_tail
@@ -939,8 +932,8 @@ class FlexopAeroelastic(FlexopStructure):
 
     def generate_left_tail_aero(self) -> None:
         if self.use_multibody:
-            self.surface_distribution[self.elem_slice['tail2']] = 5
-            self.surface_m[5] = self.m_tail
+            self.surface_distribution[self.elem_slice['tail2']] = 3
+            self.surface_m[3] = self.m_tail
         else:
             self.surface_distribution[self.elem_slice['tail2']] = 3
             self.surface_m[3] = self.m_tail
@@ -1059,20 +1052,36 @@ class FlexopAeroelastic(FlexopStructure):
                 pass
             case 'free_hinge':
                 flare_ang: float = float(constraint_args.get('flare_angle', 0.))
-                hinge_node = int(self.node_slice['wing1_main'][-1])
+                sweep_ang: float = self.dimensions['sweep_wing_qchord']
+                hinge1_node = int(self.node_slice['wing1_main'][-1])
+                hinge2_node = hinge1_node * 2
+
+                e1 = np.array((1., 0., 0.))
+                angle_b = np.pi / 2. - sweep_ang
+                rmat_b = np.array(((np.cos(angle_b), -np.sin(angle_b), 0.),
+                                 (np.sin(angle_b), np.cos(angle_b), 0.),
+                                 (0., 0., 1.)))
+
+                rmat_f = np.array(((np.cos(flare_ang), -np.sin(flare_ang), 0.),
+                                   (np.sin(flare_ang), np.cos(flare_ang), 0.),
+                                   (0., 0., 1.)))
+
+                b1_axis = rmat_b.T @ e1
+                b2_axis = rmat_b @ e1
+
                 self.constraints.append({'behaviour': 'hinge_node_FoR',
                                          'body_FoR': 1,
                                          'body': 0,
-                                         'node_in_body': hinge_node,
-                                         'rot_axisA2': [np.cos(flare_ang), -np.sin(flare_ang), 0.],
-                                         'rot_axisB': [np.sin(flare_ang), np.cos(flare_ang), 0.],
+                                         'node_in_body': hinge1_node,
+                                         'rot_axisA2': rmat_f.T @ e1,
+                                         'rot_axisB': rmat_f.T @ b1_axis,
                                          })
                 self.constraints.append({'behaviour': 'hinge_node_FoR',
                                          'body_FoR': 2,
                                          'body': 0,
-                                         'node_in_body': 2 * hinge_node,
-                                         'rot_axisA2': [np.cos(flare_ang), np.sin(flare_ang), 0.],
-                                         'rot_axisB': [-np.sin(flare_ang), np.cos(flare_ang), 0.],
+                                         'node_in_body': hinge2_node,
+                                         'rot_axisA2': rmat_f @ e1,
+                                         'rot_axisB': rmat_f @ b2_axis,
                                          })
 
                 hinge_x = self.x[self.node_slice['wing1_main'][-1]]
@@ -1123,6 +1132,9 @@ class FlexopAeroelastic(FlexopStructure):
                 self.airfoil_distribution[self.elem_slice['wing1_tip'][0], 0] = 1
                 self.airfoil_distribution[self.elem_slice['wing2_main'][-1], 1] = 1
                 self.airfoil_distribution[self.elem_slice['wing2_tip'][0], 0] = 1
+
+                # self.aero_node[self.node_slice['wing1_tip'][0]] = 0
+                # self.aero_node[self.node_slice['wing2_tip'][0]] = 0
 
             case 'prescribed_hinge':
                 hinge_node: int = int(self.node_slice['wing1_main'][-1])
@@ -1178,6 +1190,7 @@ class FlexopAeroelastic(FlexopStructure):
                 u_rhs[:, 2] += z_ang_offset
                 u_lhs[:, 2] += z_ang_offset
 
+
                 np.save(self.constraint_settings['input_angle_rhs_dir'], u_rhs)
                 np.save(self.constraint_settings['input_velocity_rhs_dir'], u_dot_rhs)
                 np.save(self.constraint_settings['input_angle_lhs_dir'], u_lhs)
@@ -1210,6 +1223,7 @@ class FlexopAeroelastic(FlexopStructure):
         n_tstep = self.input_settings['n_tstep']
         dt = self.input_settings['dt']
         use_aero = self.input_settings.get('use_aero', True)
+        steady_aero = self.input_settings.get('steady_aero', False)
 
         self.settings['SHARPy'] = {
             'flow': self.input_settings['flow'],
@@ -1233,6 +1247,13 @@ class FlexopAeroelastic(FlexopStructure):
                                            'u_inf_direction': u_inf_dir,
                                            'dt': dt}
         }
+
+        self.settings['AerogridPlot'] = {'include_rbm': True,
+                                         'include_applied_forces': True,
+                                         'minus_m_star': 0}
+
+        self.settings['BeamPlot'] = {'include_rbm': True,
+                                     'include_applied_forces': True}
 
         if not self.cfl1:
             self.settings['AerogridLoader']['wake_shape_generator_input'].update({'dx1': u_inf * dt,
@@ -1299,6 +1320,7 @@ class FlexopAeroelastic(FlexopStructure):
 
         self.settings['NonLinearDynamicMultibodyJAX'] = {'gravity_on': True,
                                                          'gravity': 9.81,
+                                                         'num_steps': n_tstep,
                                                          'initial_velocity': u_inf if self.free else 0.,
                                                          'time_integrator': 'NewmarkBetaJAX',
                                                          'time_integrator_settings': {'newmark_damp': 0.0,
@@ -1317,7 +1339,6 @@ class FlexopAeroelastic(FlexopStructure):
                                      'convection_scheme': 2,
                                      'velocity_field_generator': 'GustVelocityField',
                                      'velocity_field_input':
-                                         # {'u_inf': u_inf * int(self.free),
                                          {'u_inf': u_inf * int(not self.free),
                                           'u_inf_direction': u_inf_dir,
                                           'gust_shape': '1-cos',
@@ -1331,14 +1352,24 @@ class FlexopAeroelastic(FlexopStructure):
                                      'dt': dt,
                                      'gamma_dot_filtering': 3}
 
+        self.settings['StaticUvlm'] = {'print_info': True,
+                                       'horseshoe': True,
+                                       'num_cores': 8,
+                                       'velocity_field_generator': 'SteadyVelocityField',
+                                       'velocity_field_input':
+                                           {'u_inf': u_inf * int(not self.free),
+                                            'u_inf_direction': u_inf_dir},
+                                       'rollup_dt': dt,
+                                       'rho': rho,
+                                       'map_forces_on_struct': True
+                                       }
+
         self.settings['AeroForcesCalculator'] = {'write_text_file': True}
 
         self.settings['DynamicCoupled'] = {'print_info': True,
                                            'structural_substeps': 0,
                                            'dynamic_relaxation': True,
                                            'cleanup_previous_solution': True,
-                                           'aero_solver': 'StepUvlm' if use_aero else 'NoAero',
-                                           'aero_solver_settings': self.settings['StepUvlm'] if use_aero else {},
                                            'fsi_substeps': 100,
                                            'minimum_steps': 1,
                                            'relaxation_steps': 150,
@@ -1346,15 +1377,33 @@ class FlexopAeroelastic(FlexopStructure):
                                            'n_time_steps': n_tstep,
                                            'dt': dt,
                                            'include_unsteady_force_contribution': True,
-                                           'postprocessors': ['BeamPlot', 'AerogridPlot', 'BeamLoads'],
-                                           'postprocessors_settings': {'BeamPlot': {'include_rbm': True,
-                                                                                    'include_applied_forces': True},
+                                           'postprocessors': ['BeamLoads'],
+                                           'postprocessors_settings': {'BeamLoads': {}}}
+
+        if use_aero:
+            if steady_aero:
+                self.settings['DynamicCoupled']['aero_solver'] = 'StaticUvlm'
+                self.settings['DynamicCoupled']['aero_solver_settings'] = self.settings['StaticUvlm']
+            else:
+                self.settings['DynamicCoupled']['aero_solver'] = 'StepUvlm'
+                self.settings['DynamicCoupled']['aero_solver_settings'] = self.settings['StepUvlm']
+        else:
+            self.settings['DynamicCoupled']['aero_solver'] = 'NoAero'
+            self.settings['DynamicCoupled']['aero_solver_settings'] = {}
+
+
+        if self.input_settings.get('save_vtu', True):
+            stride = self.input_settings.get('plot_stride', 1)
+            self.settings['DynamicCoupled']['postprocessors'].extend(['AerogridPlot', 'BeamPlot'])
+            self.settings['DynamicCoupled']['postprocessors_settings'].update({'BeamPlot': {'include_rbm': True,
+                                                                                    'include_applied_forces': True,
+                                                                                            'stride': stride},
                                                                        'AerogridPlot': {
                                                                            'u_inf': u_inf,
                                                                            'include_rbm': True,
                                                                            'include_applied_forces': True,
-                                                                           'minus_m_star': 0},
-                                                                        'BeamLoads': {}}}
+                                                                           'minus_m_star': 0,
+                                                                       'stride': stride}})
 
         if self.use_multibody and self.use_jax:
             self.settings['DynamicCoupled'].update({'structural_solver': 'NonLinearDynamicMultibodyJAX'})
@@ -1384,13 +1433,6 @@ class FlexopAeroelastic(FlexopStructure):
                                       'ang_vel_history_input_file': self.constraint_settings['input_velocity_lhs_dir'],
                                       'dt': dt}}
 
-        self.settings['AerogridPlot'] = {'include_rbm': True,
-                                         'include_applied_forces': True,
-                                         'minus_m_star': 0}
-
-        self.settings['BeamPlot'] = {'include_rbm': True,
-                                     'include_applied_forces': True}
-
         self.settings['BeamLoads'] = {}
 
         self.settings['Modal'] = {'NumLambda': 20,
@@ -1404,6 +1446,12 @@ class FlexopAeroelastic(FlexopStructure):
                                   'max_displacement': 0.15,
                                   'write_modes_vtk': True,
                                   'use_undamped_modes': True}
+        self.settings['DynamicTrim'] = {'solver': 'DynamicCoupled',
+                                        'solver_settings': self.settings['DynamicCoupled'],
+                                        'speed_up_factor': 1.
+                                        }
+        if 'DynamicTrim' in self.input_settings['flow']:
+            self.settings['DynamicTrim']['solver_settings']['structural_solver_settings'].update({'dyn_trim': True})
 
         config = configobj.ConfigObj()
         config.filename = self.case_route + '/' + self.case_name + '.sharpy'

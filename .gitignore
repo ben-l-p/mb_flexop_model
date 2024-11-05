@@ -143,6 +143,7 @@ cython_debug/
 *.sharpy
 *.log
 cases/
+test_cases/
 
 # SHARPy output files
 output/
