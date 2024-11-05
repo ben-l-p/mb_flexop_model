@@ -18,7 +18,7 @@ multibody wingtips in green.">
  </p>
 
 ## Using the model
-To create a model, use the class ''FlexopAeroelastic'' as below:
+To create a model, use the class ```FlexopAeroelastic``` as below:
 
 ```python
 from create_multibody_flexop import FlexopAeroelastic
