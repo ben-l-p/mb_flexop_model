@@ -49,4 +49,4 @@ Lastly to run the case:
 case_data = sharpy.sharpy_main.main(['', case_route + '/' + case_name + '.sharpy'])
 ```
 
-where output data will both be written to files (Paraview data for the aero and structure), as well as data being retured in the ```case_data``` object. 
+where output data will both be written to files (Paraview data for the aero and structure), as well as data being retured in the ```case_data``` object. To use the JAX multibody solver, a version of SHARPy with this needs to be used, with an early version available [here](https://github.com/ImperialCollegeLondon/sharpy/tree/dev_jax_multibody). The free hinge and fixed sweep cases can be run on the original ```NonlinearDynamicMultibody``` solver using the settings ```'use_jax'=False```.
